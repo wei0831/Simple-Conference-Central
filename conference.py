@@ -168,11 +168,12 @@ class ConferenceApi(remote.Service):
         if not request.name:
             raise endpoints.BadRequestException('Session "name" field required')
 
-        conference_key = ndb.Key(urlsafe=request.websafeConferenceKey)
-        if not conference_key:
+        try:
+            conference_key = ndb.Key(urlsafe=request.websafeConferenceKey)
+            conference = conference_key.get()
+        except:
             raise endpoints.BadRequestException('Invalid websafeConferenceKey')
-
-        conference = conference_key.get()
+            
         if not conference:
             raise endpoints.BadRequestException('Conference not found')
 
@@ -205,6 +206,7 @@ class ConferenceApi(remote.Service):
         # Save the Session
         session.put()
 
+        # Put in Taskqueue to feature speaker if condition met
         taskqueue.add(
             params={'speaker': session.speaker,
                     'websafeConferenceKey': request.websafeConferenceKey},
