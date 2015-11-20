@@ -3,11 +3,13 @@
 """
 conference.py -- Udacity conference server-side Python App Engine API;
     uses Google Cloud Endpoints
-
 $Id: conference.py,v 1.25 2014/05/24 23:42:19 wesc Exp wesc $
+created by wesc on 2014 apr 21
+modified by Jack Chang on 2015 nov 20
 """
 
-__author__ = 'wei0831@gmail.com (Jack Chang)'
+__author__ = 'wesc+api@google.com (Wesley Chun)'
+
 
 from datetime import datetime
 
@@ -65,7 +67,7 @@ DEFAULTS = {
 }
 
 SESSION_DEFAULTS = {
-    "highlights": ["Default", "Highlight"],
+    "highlights": ["Default"],
     "speaker": "Default",
     "duration": 0,
     "typeOfSession": "Default",
@@ -141,7 +143,7 @@ class ConferenceApi(remote.Service):
         sf = SessionForm()
         for field in sf.all_fields():
             if hasattr(session, field.name):
-                if field.name == 'startTime':
+                if field.name == 'date' or field.name == 'startTime':
                     setattr(sf, field.name, str(getattr(session, field.name)))
                 else:
                     setattr(sf, field.name, getattr(session, field.name))
@@ -190,27 +192,24 @@ class ConferenceApi(remote.Service):
 
         if data['startTime']:
             data['startTime'] = datetime.strptime(data['startTime'][:5], "%H:%M").time()
+        if data['date']:
+            data['date'] = datatime.strptime(data['date'][:10], "%Y-%m-%d").date()
 
-        s_id = Session.allocate_ids(size = 1, parent = conference_key)[0]
-        s_key = ndb.Key(Session, s_id, parent = conference_key)
+        # Generate key
+        s_id = Session.allocate_ids(size=1, parent=conference_key)[0]
+        s_key = ndb.Key(Session, s_id, parent=conference_key)
         data['key'] = s_key
 
         session = Session(**data)
 
-        # if there is more than one session by this speaker at this conference,
-        # add a new Memcache entry that features the speaker and session names.
-        sessions = Session.query(ancestor=conference_key)\
-            .filter(Session.speaker == session.speaker).fetch()
-        if len(sessions) >= 1 :
-            taskqueue.add(
-                params={'speaker': session.speaker,
-                        'sessions': ', '.join(s.name for s in sessions) + \
-                        ', ' + session.name},
-                url='/tasks/set_featured_speaker'
-            )
-
         # Save the Session
         session.put()
+
+        taskqueue.add(
+            params={'speaker': session.speaker,
+                    'websafeConferenceKey': request.websafeConferenceKey},
+            url='/tasks/set_featured_speaker'
+        )
 
         return request
 
@@ -223,6 +222,16 @@ class ConferenceApi(remote.Service):
         """POST: Create session"""
         session = self._createSessionObject(request)
         return self._copySessionToForm(session)
+
+
+    @endpoints.method(message_types.VoidMessage, SessionForms,
+                      path='sessions',
+                      http_method='GET',
+                      name='getAllSessions')
+    def getAllSessions(self, request):
+        """GET: Get all sessions"""
+        sessions = Session.query()
+        return SessionForms(items=[self._copySessionToForm(session) for session in sessions])
 
 
     @endpoints.method(message_types.VoidMessage, SessionTypes,
@@ -248,15 +257,6 @@ class ConferenceApi(remote.Service):
         sessions = sessions.filter(Session.startTime < startTime)
         return SessionForms(items=[self._copySessionToForm(session) for session in sessions])
 
-    @endpoints.method(message_types.VoidMessage, SessionForms,
-                      path='sessions',
-                      http_method='GET',
-                      name='getAllSessions')
-    def getAllSessions(self, request):
-        """GET: Get all sessions"""
-        sessions = Session.query()
-        return SessionForms(items=[self._copySessionToForm(session) for session in sessions])
-
 
     @endpoints.method(SESSION_GET_REQUEST, SessionForms,
                       path='conference/{websafeConferenceKey}/sessions',
@@ -280,7 +280,7 @@ class ConferenceApi(remote.Service):
 
 
     @endpoints.method(SESSION_GET_REQUEST, SessionForms,
-                      path='conference/{websafeConferenceKey}/sessions/type/{speaker}',
+                      path='conference/{websafeConferenceKey}/sessions/speaker/{speaker}',
                       http_method='GET',
                       name='getConferenceSessionsBySpeaker')
     def getConferenceSessionsBySpeaker(self, request):
@@ -396,12 +396,16 @@ class ConferenceApi(remote.Service):
 
 
     @staticmethod
-    def _cacheFeaturedSpeaker(speaker, sessions):
+    def _cacheFeaturedSpeaker(speaker, websafeConferenceKey):
         """Set Memcache with Featured Speaker"""
-        featured = FEATURED_TPL % (speaker, sessions)
-        memcache.set(MEMCACHE_FEATURED_KEY, featured)
-        return featured
-
+        # if there is more than one session by this speaker at this conference,
+        # add a new Memcache entry that features the speaker and session names.
+        sessions = Session.query(ancestor=ndb.Key(urlsafe=websafeConferenceKey))\
+            .filter(Session.speaker == speaker).fetch()
+        if len(sessions) >= 1 :
+            sf = ', '.join(s.name for s in sessions)
+            featured = FEATURED_TPL % (speaker, sf)
+            memcache.set(MEMCACHE_FEATURED_KEY, featured)
 
     @endpoints.method(message_types.VoidMessage, StringMessage,
                       path='sessions/featured',
